@@ -3,7 +3,7 @@ import { supabase } from "./supabaseClient.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-const tabs = ["Dashboard", "Calendar", "Tasks", "Insights", "Import"];
+const tabs = ["Dashboard", "Calendar", "Tasks", "Import"];
 
 const baseExtractions = [];
 
@@ -769,63 +769,6 @@ function App() {
                     <RiskBadge level={deriveRisk(task)} />
                   </div>
                 ))}
-            </div>
-          </section>
-        )}
-
-        {activeTab === "Insights" && (
-          <section className="page" aria-label="Insights">
-            <div className="page-head">
-              <div>
-                <h1>Insights</h1>
-                <p className="muted">
-                  Track habit trends and performance indicators.
-                </p>
-              </div>
-            </div>
-
-            <div className="split-grid">
-              <div className="card">
-                <div className="card-head">
-                  <h3>Completion trend</h3>
-                  <span className="muted">last 14 days</span>
-                </div>
-                <div className="trend">
-                  {trendData
-                    .concat([68, 73, 66, 80, 77, 85, 90])
-                    .map((value, index) => (
-                      <div
-                        key={`${value}-${index}`}
-                        className="trend-bar"
-                        style={{ height: `${value}%`, animationDelay: `${index * 40}ms` }}
-                      />
-                    ))}
-                </div>
-              </div>
-              <div className="card">
-                <div className="card-head">
-                  <h3>Missed deadlines</h3>
-                  <span className="muted">last 8 weeks</span>
-                </div>
-                <div className="metric-grid">
-                  {[
-                    { label: "This week", value: "1" },
-                    { label: "Last week", value: "0" },
-                    { label: "Peak", value: "2" },
-                    { label: "Average", value: "0.6" }
-                  ].map((item) => (
-                    <div key={item.label} className="metric">
-                      <p className="muted">{item.label}</p>
-                      <h3>{item.value}</h3>
-                    </div>
-                  ))}
-                </div>
-                <div className="recommend-card">
-                  <p className="muted">Next best action</p>
-                  <h3>Add a 30-min buffer block on Thu</h3>
-                  <button className="btn btn-secondary">Schedule it</button>
-                </div>
-              </div>
             </div>
           </section>
         )}
