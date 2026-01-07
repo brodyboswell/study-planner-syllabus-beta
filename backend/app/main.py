@@ -51,13 +51,17 @@ def health_check() -> dict:
     return {"status": "ok"}
 
 
-def _owner_id(x_user_id: Optional[str]) -> str:
-    return x_user_id or "local"
+def _require_user_id(x_user_id: Optional[str]) -> str:
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Sign in required.")
+    return x_user_id
 
 
 class TaskIn(BaseModel):
     title: str
     course: Optional[str] = None
+    description: Optional[str] = None
+    task_type: Optional[str] = None
     due_date: Optional[str] = None
     estimated_minutes: Optional[int] = None
     importance: Optional[int] = None
@@ -67,6 +71,8 @@ class TaskIn(BaseModel):
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
     course: Optional[str] = None
+    description: Optional[str] = None
+    task_type: Optional[str] = None
     due_date: Optional[str] = None
     estimated_minutes: Optional[int] = None
     importance: Optional[int] = None
@@ -77,7 +83,7 @@ class TaskUpdate(BaseModel):
 def list_tasks_endpoint(
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id")
 ) -> dict:
-    return {"tasks": list_tasks(user_id=_owner_id(x_user_id))}
+    return {"tasks": list_tasks(user_id=_require_user_id(x_user_id))}
 
 
 @app.get("/api/tasks/{task_id}")
@@ -85,7 +91,7 @@ def get_task_endpoint(
     task_id: int,
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id")
 ) -> dict:
-    task = get_task(task_id, user_id=_owner_id(x_user_id))
+    task = get_task(task_id, user_id=_require_user_id(x_user_id))
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     return task
@@ -96,7 +102,7 @@ def create_task_endpoint(
     task: TaskIn,
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id")
 ) -> dict:
-    return create_task(task.model_dump(), user_id=_owner_id(x_user_id))
+    return create_task(task.model_dump(), user_id=_require_user_id(x_user_id))
 
 
 @app.patch("/api/tasks/{task_id}")
@@ -105,7 +111,11 @@ def update_task_endpoint(
     task: TaskUpdate,
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id")
 ) -> dict:
-    updated = update_task(task_id, task.model_dump(exclude_unset=True), user_id=_owner_id(x_user_id))
+    updated = update_task(
+        task_id,
+        task.model_dump(exclude_unset=True),
+        user_id=_require_user_id(x_user_id)
+    )
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found.")
     return updated
@@ -116,7 +126,7 @@ def delete_task_endpoint(
     task_id: int,
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id")
 ) -> dict:
-    if not delete_task(task_id, user_id=_owner_id(x_user_id)):
+    if not delete_task(task_id, user_id=_require_user_id(x_user_id)):
         raise HTTPException(status_code=404, detail="Task not found.")
     return {"status": "deleted"}
 
@@ -131,6 +141,7 @@ def upload_syllabus(
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Upload a PDF file.")
 
+    owner_id = _require_user_id(x_user_id)
     file_bytes = file.file.read()
     events = extract_events_from_pdf_bytes(file_bytes)
     calendar = build_calendar(events)
@@ -141,7 +152,7 @@ def upload_syllabus(
         events=[event.__dict__ for event in events],
         calendar=calendar,
         course=course,
-        user_id=_owner_id(x_user_id)
+        user_id=owner_id
     )
 
     if format == "ics":
@@ -166,7 +177,7 @@ def get_syllabus(
     syllabus_id: str,
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id")
 ):
-    record = get_record(syllabus_id, user_id=_owner_id(x_user_id))
+    record = get_record(syllabus_id, user_id=_require_user_id(x_user_id))
     if not record:
         raise HTTPException(status_code=404, detail="Syllabus not found.")
     calendar = build_calendar(record["events"])
@@ -179,7 +190,7 @@ def get_calendar(
     format: str = Query(default="json"),
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id")
 ):
-    record = get_record(syllabus_id, user_id=_owner_id(x_user_id))
+    record = get_record(syllabus_id, user_id=_require_user_id(x_user_id))
     if not record:
         raise HTTPException(status_code=404, detail="Syllabus not found.")
 

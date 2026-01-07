@@ -7,13 +7,23 @@ const tabs = ["Dashboard", "Calendar", "Tasks", "Import"];
 
 const baseExtractions = [];
 
-const recommendationList = [
-  "Add 60 more minutes this week for CHEM 140 to reduce risk.",
-  "Split MATH 221 problem set into two blocks before Wed.",
-  "You missed 1 deadline last week, keep buffer blocks on Thu."
+const TASK_TYPES = [
+  { value: "assignment", label: "Assignment" },
+  { value: "essay", label: "Essay" },
+  { value: "discussion", label: "Discussion" },
+  { value: "project", label: "Project" },
+  { value: "exam", label: "Exam" },
+  { value: "lecture", label: "Lecture" }
 ];
 
-const trendData = [42, 55, 47, 62, 70, 58, 75];
+const TASK_TYPE_WEIGHTS = {
+  assignment: 1,
+  essay: 2,
+  discussion: 1,
+  project: 3,
+  exam: 3,
+  lecture: 1
+};
 
 function App() {
   const [activeTab, setActiveTab] = useState("Dashboard");
@@ -32,11 +42,17 @@ function App() {
   const [newTask, setNewTask] = useState({
     title: "",
     course: "",
+    description: "",
+    taskType: "",
     dueDate: "",
     estimatedMinutes: "",
     importance: ""
   });
   const [taskFormError, setTaskFormError] = useState("");
+  const [activeTask, setActiveTask] = useState(null);
+  const [taskEdit, setTaskEdit] = useState(null);
+  const [taskSaving, setTaskSaving] = useState(false);
+  const [taskEditError, setTaskEditError] = useState("");
   const [session, setSession] = useState(null);
   const [authMode, setAuthMode] = useState("sign-in");
   const [authEmail, setAuthEmail] = useState("");
@@ -44,7 +60,10 @@ function App() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  const userId = session?.user?.id || "local";
+  const userId = session?.user?.id;
+  const userEmail = session?.user?.email || "";
+  const userName = session?.user?.user_metadata?.full_name || "";
+  const userLabel = userName || userEmail || "your account";
 
   useEffect(() => {
     if (!supabase) return;
@@ -69,6 +88,12 @@ function App() {
   }, []);
 
   const fetchTasks = useCallback(async () => {
+    if (!userId) {
+      setTasks([]);
+      setTasksLoading(false);
+      setTasksError("");
+      return;
+    }
     setTasksLoading(true);
     setTasksError("");
     try {
@@ -93,6 +118,19 @@ function App() {
     fetchTasks();
   }, [fetchTasks]);
 
+  useEffect(() => {
+    setCalendar(null);
+    setExtractions(baseExtractions);
+    setSyllabusId(null);
+    setUploadState("idle");
+    setFileName("");
+    setError("");
+    setActiveTask(null);
+    setTaskEdit(null);
+    setTaskEditError("");
+    setTaskSaving(false);
+  }, [userId]);
+
   const courses = useMemo(() => {
     const values = new Set(
       tasks.map((task) => task.course || "General").filter(Boolean)
@@ -107,7 +145,6 @@ function App() {
     );
   }, [courseFilter, tasks]);
 
-  const importedEvents = calendar?.events ?? [];
   const deadlineEvents = useMemo(() => {
     const items = [];
     tasks.forEach((task) => {
@@ -157,10 +194,222 @@ function App() {
     const dateSet = new Set(weekDays.map((day) => day.iso));
     return deadlineEvents.filter((event) => dateSet.has(event.date)).length;
   }, [deadlineEvents, weekDays]);
+  const extractionSummary = useMemo(() => {
+    return extractions.reduce(
+      (summary, item) => {
+        const status = item.status || "pending";
+        if (status === "accepted") summary.accepted += 1;
+        else if (status === "rejected") summary.rejected += 1;
+        else summary.pending += 1;
+        return summary;
+      },
+      { accepted: 0, pending: 0, rejected: 0 }
+    );
+  }, [extractions]);
+  const activeTasks = useMemo(
+    () => tasks.filter((task) => task.status !== "done"),
+    [tasks]
+  );
+  const tasksWithDueDates = useMemo(() => {
+    return tasks
+      .map((task) => {
+        const dueDate = parseISODate(task.due_date);
+        if (!dueDate) return null;
+        return {
+          ...task,
+          dueDate,
+          daysUntil: daysUntilDate(dueDate)
+        };
+      })
+      .filter(Boolean);
+  }, [tasks]);
+  const activeTasksWithDueDates = useMemo(
+    () => tasksWithDueDates.filter((task) => task.status !== "done"),
+    [tasksWithDueDates]
+  );
+  const upcomingTasks = useMemo(() => {
+    return activeTasksWithDueDates
+      .filter((task) => task.daysUntil !== null && task.daysUntil >= 0)
+      .sort((a, b) => a.dueDate - b.dueDate);
+  }, [activeTasksWithDueDates]);
+  const upcomingAssignments = useMemo(
+    () => upcomingTasks.slice(0, 8),
+    [upcomingTasks]
+  );
+  const overdueTasks = useMemo(() => {
+    return activeTasksWithDueDates
+      .filter((task) => task.daysUntil !== null && task.daysUntil < 0)
+      .sort((a, b) => a.dueDate - b.dueDate);
+  }, [activeTasksWithDueDates]);
+  const nextTask = upcomingTasks[0] || overdueTasks[0] || null;
+  const tasksDueSoonCount = useMemo(() => {
+    return activeTasksWithDueDates.filter(
+      (task) => task.daysUntil !== null && task.daysUntil >= 0 && task.daysUntil <= 5
+    ).length;
+  }, [activeTasksWithDueDates]);
+  const focusCourses = useMemo(() => {
+    const focusTasks = activeTasksWithDueDates.filter(
+      (task) => task.daysUntil !== null && task.daysUntil >= 0 && task.daysUntil <= 14
+    );
+    return getTopCourses(focusTasks, 2);
+  }, [activeTasksWithDueDates]);
+  const focusText =
+    focusCourses.length === 0
+      ? ""
+      : focusCourses.length === 1
+        ? `Focus on ${focusCourses[0]}.`
+        : `Focus on ${focusCourses[0]} and ${focusCourses[1]}.`;
+  const heroSummary = useMemo(() => {
+    if (!tasks.length) {
+      return "Add tasks to see upcoming deadlines and recommendations.";
+    }
+    if (!tasksWithDueDates.length) {
+      return "Add due dates to keep your upcoming deadlines accurate.";
+    }
+    if (!tasksDueSoonCount) {
+      return "No deadlines in the next 5 days. You're in good shape.";
+    }
+    return `${tasksDueSoonCount} deadlines in the next 5 days.${focusText ? ` ${focusText}` : ""}`;
+  }, [focusText, tasks.length, tasksDueSoonCount, tasksWithDueDates.length]);
+  const weekDateSet = useMemo(
+    () => new Set(weekDays.map((day) => day.iso)),
+    [weekDays]
+  );
+  const tasksDueThisWeek = useMemo(() => {
+    return tasksWithDueDates.filter((task) =>
+      weekDateSet.has(toISODate(task.dueDate))
+    );
+  }, [tasksWithDueDates, weekDateSet]);
+  const completedThisWeek = useMemo(
+    () => tasksDueThisWeek.filter((task) => task.status === "done").length,
+    [tasksDueThisWeek]
+  );
+  const completedTasks = useMemo(
+    () => tasks.filter((task) => task.status === "done").length,
+    [tasks]
+  );
+  const progressPercent = useMemo(() => {
+    if (tasksDueThisWeek.length) {
+      return Math.round((completedThisWeek / tasksDueThisWeek.length) * 100);
+    }
+    if (tasks.length) {
+      return Math.round((completedTasks / tasks.length) * 100);
+    }
+    return null;
+  }, [completedThisWeek, completedTasks, tasks.length, tasksDueThisWeek.length]);
+  const riskCounts = useMemo(() => {
+    const counts = { high: 0, medium: 0, low: 0 };
+    activeTasks.forEach((task) => {
+      const level = deriveRisk(task);
+      counts[level] += 1;
+    });
+    return counts;
+  }, [activeTasks]);
+  const riskScore = useMemo(() => {
+    const total = activeTasks.length;
+    if (!total) return null;
+    const score =
+      (riskCounts.high * 1 + riskCounts.medium * 0.6 + riskCounts.low * 0.2) /
+      total;
+    return Number(score.toFixed(2));
+  }, [activeTasks.length, riskCounts]);
+  const riskLabel =
+    riskScore === null
+      ? "No data"
+      : riskScore >= 0.6
+        ? "High"
+        : riskScore >= 0.35
+          ? "Moderate"
+          : "Low";
+  const upcomingWeekCount = useMemo(() => {
+    return activeTasksWithDueDates.filter(
+      (task) => task.daysUntil !== null && task.daysUntil >= 0 && task.daysUntil <= 7
+    ).length;
+  }, [activeTasksWithDueDates]);
+  const upcomingNote = useMemo(() => {
+    if (!upcomingWeekCount) {
+      if (!tasks.length) return "No tasks yet";
+      if (!tasksWithDueDates.length) return "Add due dates to track deadlines";
+      return "No upcoming deadlines";
+    }
+    return `${riskCounts.high} high risk`;
+  }, [riskCounts.high, tasks.length, tasksWithDueDates.length, upcomingWeekCount]);
+  const estimatedMinutesThisWeek = useMemo(() => {
+    return activeTasksWithDueDates
+      .filter((task) => task.daysUntil !== null && task.daysUntil >= 0 && task.daysUntil <= 7)
+      .reduce((total, task) => total + (task.estimated_minutes || 0), 0);
+  }, [activeTasksWithDueDates]);
+  const estimatedTasksCount = useMemo(() => {
+    return activeTasksWithDueDates.filter(
+      (task) =>
+        task.daysUntil !== null &&
+        task.daysUntil >= 0 &&
+        task.daysUntil <= 7 &&
+        task.estimated_minutes
+    ).length;
+  }, [activeTasksWithDueDates]);
+  const studyHours = estimatedMinutesThisWeek / 60;
+  const studyHoursLabel = studyHours ? studyHours.toFixed(1) : "0.0";
+  const weekDeadlineCounts = useMemo(() => {
+    const indexMap = new Map(weekDays.map((day, index) => [day.iso, index]));
+    const counts = weekDays.map(() => 0);
+    tasksWithDueDates.forEach((task) => {
+      const index = indexMap.get(task.due_date);
+      if (index !== undefined) {
+        counts[index] += 1;
+      }
+    });
+    return counts;
+  }, [tasksWithDueDates, weekDays]);
+  const weekDeadlineTotal = useMemo(
+    () => weekDeadlineCounts.reduce((total, value) => total + value, 0),
+    [weekDeadlineCounts]
+  );
+  const weekTrendMax = Math.max(1, ...weekDeadlineCounts);
+  const recommendations = useMemo(() => {
+    const items = [];
+    const highRiskTasks = activeTasksWithDueDates
+      .filter((task) => deriveRisk(task) === "high")
+      .sort((a, b) => a.dueDate - b.dueDate);
+    if (highRiskTasks.length) {
+      const task = highRiskTasks[0];
+      const course = task.course || "General";
+      items.push(
+        `Prioritize ${task.title} for ${course} by ${formatMonthDay(task.dueDate)}.`
+      );
+    }
+    const longTasks = activeTasksWithDueDates
+      .filter((task) => (task.estimated_minutes || 0) >= 120)
+      .sort((a, b) => a.dueDate - b.dueDate);
+    if (longTasks.length && items.length < 3) {
+      const task = longTasks[0];
+      items.push(`Split ${task.title} into smaller blocks before ${formatMonthDay(task.dueDate)}.`);
+    }
+    const soonTasks = upcomingTasks.filter(
+      (task) => task.daysUntil !== null && task.daysUntil >= 0 && task.daysUntil <= 2
+    );
+    if (soonTasks.length && items.length < 3) {
+      const task = soonTasks[0];
+      items.push(`Schedule time for ${task.title} due ${formatMonthDay(task.dueDate)}.`);
+    }
+    const noDateTasks = activeTasks.filter((task) => !task.due_date);
+    if (noDateTasks.length && items.length < 3) {
+      items.push(`Add a due date for ${noDateTasks[0].title} to keep the plan accurate.`);
+    }
+    if (!items.length) {
+      return ["Add tasks to receive recommendations tailored to your week."];
+    }
+    return items.slice(0, 3);
+  }, [activeTasks, activeTasksWithDueDates, upcomingTasks]);
 
   const handleFileChange = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (!userId) {
+      setError("Sign in to upload a syllabus.");
+      setUploadState("idle");
+      return;
+    }
     setFileName(file.name);
     setUploadState("uploading");
     setError("");
@@ -194,16 +443,21 @@ function App() {
       const data = await response.json();
       setSyllabusId(data.syllabus_id);
       setCalendar(data.calendar);
+      const extractedEvents = data.events || [];
       setExtractions(
-        (data.events || []).map((event) => ({
+        extractedEvents.map((event) => ({
           id: event.id,
           title: event.title,
           dueDate: event.date,
           type: event.type || "deadline",
+          taskType: mapEventTypeToTaskType(event.type),
           confidence: event.confidence ?? 0,
           status: (event.confidence ?? 0) >= 0.75 ? "accepted" : "pending"
         }))
       );
+      if (!extractedEvents.length) {
+        setError("No dated items were detected. Try another PDF or add tasks manually.");
+      }
       setUploadState("review");
     } catch (err) {
       setUploadState("idle");
@@ -218,6 +472,10 @@ function App() {
   };
 
   const handleConfirm = async () => {
+    if (!userId) {
+      setError("Sign in to add tasks from a syllabus.");
+      return;
+    }
     if (!extractions.length) {
       setError("No items found. Try another PDF or add tasks manually.");
       return;
@@ -233,6 +491,12 @@ function App() {
       return;
     }
 
+    const invalidTitles = candidates.filter((item) => !item.title?.trim());
+    if (invalidTitles.length) {
+      setError("Each extracted item needs a title before confirming.");
+      return;
+    }
+
     if (!accepted.length) {
       setExtractions((items) =>
         items.map((item) =>
@@ -240,7 +504,9 @@ function App() {
         )
       );
     }
-    const courseLabel = fileName ? fileName.replace(/\\.pdf$/i, "") : null;
+    const courseLabel =
+      extractCourseFromFilename(fileName) ||
+      (fileName ? fileName.replace(/\\.pdf$/i, "") : null);
     setError("");
     setUploadState("confirming");
 
@@ -254,8 +520,9 @@ function App() {
               "X-User-Id": userId
             },
             body: JSON.stringify({
-              title: item.title,
+              title: item.title.trim(),
               course: item.course || courseLabel,
+              task_type: item.taskType || mapEventTypeToTaskType(item.type),
               due_date: item.dueDate || null,
               estimated_minutes: null,
               importance: null
@@ -263,7 +530,20 @@ function App() {
           });
 
           if (!response.ok) {
-            throw new Error(response.statusText || "Failed to create tasks");
+            let detail = response.statusText || "Failed to create tasks";
+            try {
+              const body = await response.json();
+              if (body?.detail) {
+                if (Array.isArray(body.detail)) {
+                  detail = body.detail.map((entry) => entry.msg).join(", ");
+                } else {
+                  detail = body.detail;
+                }
+              }
+            } catch (err) {
+              detail = response.statusText || detail;
+            }
+            throw new Error(detail);
           }
           return response.json();
         })
@@ -283,6 +563,10 @@ function App() {
 
   const handleTaskSubmit = async (event) => {
     event.preventDefault();
+    if (!userId) {
+      setTaskFormError("Sign in to save tasks.");
+      return;
+    }
     if (!newTask.title.trim()) {
       setTaskFormError("Task title is required.");
       return;
@@ -299,6 +583,8 @@ function App() {
         body: JSON.stringify({
           title: newTask.title.trim(),
           course: newTask.course.trim() || null,
+          description: newTask.description.trim() || null,
+          task_type: newTask.taskType || null,
           due_date: newTask.dueDate || null,
           estimated_minutes: newTask.estimatedMinutes
             ? Number(newTask.estimatedMinutes)
@@ -316,12 +602,130 @@ function App() {
       setNewTask({
         title: "",
         course: "",
+        description: "",
+        taskType: "",
         dueDate: "",
         estimatedMinutes: "",
         importance: ""
       });
     } catch (err) {
       setTaskFormError(err?.message || "Failed to create task");
+    }
+  };
+
+  const openTaskEditor = useCallback((task) => {
+    setActiveTask(task);
+    setTaskEdit({
+      title: task.title || "",
+      course: task.course || "",
+      description: task.description || "",
+      taskType: task.task_type || "",
+      dueDate: task.due_date || "",
+      estimatedMinutes:
+        task.estimated_minutes !== null && task.estimated_minutes !== undefined
+          ? String(task.estimated_minutes)
+          : "",
+      importance:
+        task.importance !== null && task.importance !== undefined
+          ? String(task.importance)
+          : "",
+      status: task.status || "pending"
+    });
+    setTaskEditError("");
+  }, []);
+
+  const closeTaskEditor = useCallback(() => {
+    setActiveTask(null);
+    setTaskEdit(null);
+    setTaskEditError("");
+    setTaskSaving(false);
+  }, []);
+
+  const handleTaskEditChange = (field, value) => {
+    setTaskEdit((prev) => (prev ? { ...prev, [field]: value } : prev));
+  };
+
+  const saveTaskUpdates = useCallback(
+    async (updates = {}) => {
+      if (!userId || !activeTask || !taskEdit) return;
+      const merged = { ...taskEdit, ...updates };
+      const estimatedMinutes =
+        merged.estimatedMinutes === "" ? null : Number(merged.estimatedMinutes);
+      const importance = merged.importance === "" ? null : Number(merged.importance);
+      const description = (merged.description || "").trim();
+      const payload = {
+        title: (merged.title || "").trim(),
+        course: (merged.course || "").trim() || null,
+        description: description || null,
+        task_type: merged.taskType || null,
+        due_date: merged.dueDate || null,
+        estimated_minutes: Number.isNaN(estimatedMinutes) ? null : estimatedMinutes,
+        importance: Number.isNaN(importance) ? null : importance,
+        status: merged.status || "pending"
+      };
+
+      if (!payload.title) {
+        setTaskEditError("Task title is required.");
+        return;
+      }
+
+      setTaskSaving(true);
+      setTaskEditError("");
+      try {
+        const response = await fetch(`${API_BASE}/api/tasks/${activeTask.id}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Id": userId
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          throw new Error(response.statusText || "Failed to update task");
+        }
+
+        await fetchTasks();
+        closeTaskEditor();
+      } catch (err) {
+        setTaskEditError(err?.message || "Failed to update task.");
+      } finally {
+        setTaskSaving(false);
+      }
+    },
+    [activeTask, closeTaskEditor, fetchTasks, taskEdit, userId]
+  );
+
+  const handleTaskEditSubmit = (event) => {
+    event.preventDefault();
+    saveTaskUpdates();
+  };
+
+  const markTaskComplete = () => {
+    saveTaskUpdates({ status: "done" });
+  };
+
+  const deleteTask = async () => {
+    if (!userId || !activeTask) return;
+    const confirmMessage = `Delete "${activeTask.title}"? This cannot be undone.`;
+    if (!window.confirm(confirmMessage)) return;
+    setTaskSaving(true);
+    setTaskEditError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/tasks/${activeTask.id}`, {
+        method: "DELETE",
+        headers: {
+          "X-User-Id": userId
+        }
+      });
+      if (!response.ok) {
+        throw new Error(response.statusText || "Failed to delete task");
+      }
+      await fetchTasks();
+      closeTaskEditor();
+    } catch (err) {
+      setTaskEditError(err?.message || "Failed to delete task.");
+      setTaskSaving(false);
     }
   };
 
@@ -357,6 +761,12 @@ function App() {
     await supabase.auth.signOut();
     setSession(null);
     setTasks([]);
+    setCalendar(null);
+    setExtractions(baseExtractions);
+    setSyllabusId(null);
+    setUploadState("idle");
+    setFileName("");
+    setError("");
   };
 
   if (!supabase) {
@@ -431,14 +841,15 @@ function App() {
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">StudyFlow</span>
-          <span className="brand-tag">Intelligent Study Planner</span>
+          <span className="brand-tag">Signed in as {userLabel}</span>
         </div>
         <div className="topbar-actions">
-          <button className="btn btn-secondary">Generate plan</button>
           <button className="btn btn-secondary" onClick={handleSignOut}>
             Sign out
           </button>
-          <button className="btn">Import syllabus</button>
+          <button className="btn" onClick={() => setActiveTab("Import")}>
+            Import syllabus
+          </button>
         </div>
       </header>
 
@@ -459,45 +870,75 @@ function App() {
           <section className="page" aria-label="Dashboard">
             <div className="hero">
               <div>
-                <p className="eyebrow">This week</p>
-                <h1>Your plan is 78% on track.</h1>
-                <p className="muted">
-                  Three deadlines in the next 5 days. Focus on CHEM 140 and
-                  MATH 221.
-                </p>
+                <p className="eyebrow">{weekLabel}</p>
+                <h1>
+                  {progressPercent === null
+                    ? "Build your plan for the week."
+                    : `Your plan is ${progressPercent}% on track.`}
+                </h1>
+                <p className="muted">{heroSummary}</p>
               </div>
               <div className="hero-card">
                 <p className="muted">Next up</p>
-                <h2>Quiz 3 deadline</h2>
-                <p className="muted">Tue 5:30 PM</p>
-                <button className="btn btn-secondary">Add buffer block</button>
+                <h2>{nextTask ? nextTask.title : "No upcoming deadlines"}</h2>
+                <p className="muted">
+                  {nextTask
+                    ? `${nextTask.course ? `${nextTask.course} · ` : ""}${
+                        nextTask.daysUntil < 0
+                          ? `Overdue ${formatShortDate(nextTask.dueDate)}`
+                          : `Due ${formatShortDate(nextTask.dueDate)}`
+                      }`
+                    : "You're all caught up."}
+                </p>
+                <button className="btn btn-secondary" onClick={() => setActiveTab("Tasks")}>
+                  {nextTask ? "Add task" : "Add your first task"}
+                </button>
               </div>
             </div>
 
             <div className="card-grid">
               <StatCard
                 title="Upcoming deadlines"
-                value="4"
-                note="2 high risk"
+                value={String(upcomingWeekCount)}
+                note={upcomingNote}
               />
-              <StatCard title="Study hours" value="12.5" note="+2.0 vs last" />
-              <StatCard title="Risk score" value="0.42" note="Moderate" />
+              <StatCard
+                title="Study hours"
+                value={studyHoursLabel}
+                note={
+                  estimatedTasksCount
+                    ? `${estimatedTasksCount} tasks estimated`
+                    : "No estimates yet"
+                }
+              />
+              <StatCard
+                title="Risk score"
+                value={riskScore === null ? "--" : riskScore.toFixed(2)}
+                note={riskLabel}
+              />
             </div>
 
             <div className="split-grid">
               <div className="card">
                 <div className="card-head">
-                  <h3>Progress trend</h3>
-                  <span className="muted">last 7 days</span>
+                  <h3>Deadline trend</h3>
+                  <span className="muted">{weekLabel}</span>
                 </div>
                 <div className="trend">
-                  {trendData.map((value, index) => (
-                    <div
-                      key={value}
-                      className="trend-bar"
-                      style={{ height: `${value}%`, animationDelay: `${index * 60}ms` }}
-                    />
-                  ))}
+                  {weekDeadlineTotal ? (
+                    weekDeadlineCounts.map((value, index) => (
+                      <div
+                        key={weekDays[index].iso}
+                        className="trend-bar"
+                        style={{
+                          height: `${Math.round((value / weekTrendMax) * 100)}%`,
+                          animationDelay: `${index * 60}ms`
+                        }}
+                      />
+                    ))
+                  ) : (
+                    <p className="muted">No deadlines scheduled this week.</p>
+                  )}
                 </div>
               </div>
               <div className="card">
@@ -506,9 +947,9 @@ function App() {
                   <span className="muted">actionable today</span>
                 </div>
                 <ul className="list">
-                  {recommendationList.map((item, index) => (
+                  {recommendations.map((item, index) => (
                     <li
-                      key={item}
+                      key={`${index}-${item}`}
                       className="list-item"
                       style={{ animationDelay: `${index * 60}ms` }}
                     >
@@ -634,27 +1075,36 @@ function App() {
 
             <div className="card">
               <div className="card-head">
-                <h3>Imported deadlines</h3>
+                <h3>Upcoming assignments</h3>
                 <span className="muted">
-                  {importedEvents.length ? `${importedEvents.length} items` : "No syllabus imported"}
+                  {upcomingAssignments.length
+                    ? `${upcomingAssignments.length} items`
+                    : "No upcoming assignments"}
                 </span>
               </div>
-              {importedEvents.length ? (
+              {upcomingAssignments.length ? (
                 <div className="list">
-                  {importedEvents.map((event) => (
-                    <div key={event.id} className="list-item imported-item">
-                      <div>
-                        <p className="task-title">{event.title}</p>
-                        <p className="muted">{event.type || "deadline"}</p>
+                  {upcomingAssignments.map((task) => {
+                    const dueDate = task.due_date
+                      ? parseISODate(task.due_date)
+                      : null;
+                    const dueLabel = dueDate ? formatShortDate(dueDate) : "--";
+                    return (
+                      <div key={task.id} className="list-item imported-item">
+                        <div>
+                          <p className="task-title">{task.title}</p>
+                          <div className="task-meta">
+                            <span className="muted">{task.course || "General"}</span>
+                            {task.task_type && <TaskTypeBadge value={task.task_type} />}
+                          </div>
+                        </div>
+                        <span className="pill">{dueLabel}</span>
                       </div>
-                      <span className="pill">{event.date}</span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
-                <p className="muted">
-                  Import a syllabus to see extracted deadlines here.
-                </p>
+                <p className="muted">No upcoming assignments. Add tasks to get started.</p>
               )}
             </div>
           </section>
@@ -693,7 +1143,7 @@ function App() {
             <div className="card task-form-card">
               <div className="card-head">
                 <h3>Add task</h3>
-                <span className="muted">Saved in your local database</span>
+                <span className="muted">Saved to {userLabel}'s calendar</span>
               </div>
               <form className="task-form" onSubmit={handleTaskSubmit}>
                 <input
@@ -709,6 +1159,13 @@ function App() {
                   value={newTask.course}
                   onChange={(event) => handleTaskChange("course", event.target.value)}
                 />
+                <div className="task-type-field">
+                  <span className="muted">Type</span>
+                  <TaskTypePicker
+                    value={newTask.taskType}
+                    onChange={(value) => handleTaskChange("taskType", value)}
+                  />
+                </div>
                 <input
                   type="date"
                   value={newTask.dueDate}
@@ -730,6 +1187,11 @@ function App() {
                   placeholder="Importance (1-5)"
                   value={newTask.importance}
                   onChange={(event) => handleTaskChange("importance", event.target.value)}
+                />
+                <textarea
+                  placeholder="Description (optional)"
+                  value={newTask.description}
+                  onChange={(event) => handleTaskChange("description", event.target.value)}
                 />
                 <button className="btn" type="submit">
                   Save task
@@ -759,8 +1221,21 @@ function App() {
                     style={{ animationDelay: `${index * 60}ms` }}
                   >
                     <div>
-                      <p className="task-title">{task.title}</p>
-                      <p className="muted">{task.course || "General"}</p>
+                      <button
+                        className="task-title task-title-button"
+                        type="button"
+                        onClick={() => openTaskEditor(task)}
+                        aria-haspopup="dialog"
+                      >
+                        {task.title}
+                      </button>
+                      <div className="task-meta">
+                        <span className="muted">{task.course || "General"}</span>
+                        {task.task_type && <TaskTypeBadge value={task.task_type} />}
+                      </div>
+                      {task.description && (
+                        <p className="task-description">{task.description}</p>
+                      )}
                     </div>
                     <span>{task.due_date || "--"}</span>
                     <span>
@@ -823,59 +1298,110 @@ function App() {
               </div>
 
               <div className="card">
-                <div className="card-head">
-                  <h3>Extracted items</h3>
-                  <span className="muted">Review before adding to calendar</span>
-                </div>
-                <div className="table">
-                  <div className="table-row table-head">
-                    <span>Title</span>
-                    <span>Due</span>
-                    <span>Type</span>
-                    <span>Confidence</span>
-                    <span>Status</span>
+                <div className="card-head review-head">
+                  <div>
+                    <h3>Review extracted items</h3>
+                    <p className="muted">
+                      Update titles, pick a type, and confirm what should be added.
+                    </p>
                   </div>
-                  {extractions.length === 0 && (
-                    <p className="muted">Upload a syllabus to see extracted items.</p>
-                  )}
-                  {extractions.map((item, index) => (
-                    <div
-                      key={item.id}
-                      className="table-row"
-                      style={{ animationDelay: `${index * 60}ms` }}
-                    >
-                      <input
-                        value={item.title}
-                        onChange={(event) =>
-                          handleExtractionUpdate(item.id, { title: event.target.value })
-                        }
-                      />
-                      <input
-                        type="date"
-                        value={item.dueDate}
-                        onChange={(event) =>
-                          handleExtractionUpdate(item.id, { dueDate: event.target.value })
-                        }
-                      />
-                      <span className="pill small">{item.type}</span>
-                      <span>{Math.round(item.confidence * 100)}%</span>
-                      <div className="status">
-                        <button
-                          className={item.status === "accepted" ? "mini active" : "mini"}
-                          onClick={() => handleExtractionUpdate(item.id, { status: "accepted" })}
-                        >
-                          Accept
-                        </button>
-                        <button
-                          className={item.status === "rejected" ? "mini active" : "mini"}
-                          onClick={() => handleExtractionUpdate(item.id, { status: "rejected" })}
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                  <div className="review-summary">
+                    <span className="pill">Total {extractions.length}</span>
+                    <span className="pill">Accepted {extractionSummary.accepted}</span>
+                    <span className="pill">Pending {extractionSummary.pending}</span>
+                    <span className="pill">Rejected {extractionSummary.rejected}</span>
+                  </div>
                 </div>
+                {extractions.length === 0 ? (
+                  <p className="muted">Upload a syllabus to see extracted items.</p>
+                ) : (
+                  <div className="extracted-list">
+                    {extractions.map((item, index) => {
+                      const confidenceValue = item.confidence ?? 0;
+                      const confidencePercent = Math.round(confidenceValue * 100);
+                      const confidenceLevel = getConfidenceLevel(confidenceValue);
+                      return (
+                        <div
+                          key={item.id}
+                          className={`extracted-card ${item.status || "pending"}`}
+                          style={{ animationDelay: `${index * 60}ms` }}
+                        >
+                          <div className="extracted-main">
+                            <label className="field">
+                              <span className="muted">Title</span>
+                              <input
+                                value={item.title}
+                                onChange={(event) =>
+                                  handleExtractionUpdate(item.id, {
+                                    title: event.target.value
+                                  })
+                                }
+                              />
+                            </label>
+                            <div className="extracted-row">
+                              <label className="field">
+                                <span className="muted">Due date</span>
+                                <input
+                                  type="date"
+                                  value={item.dueDate}
+                                  onChange={(event) =>
+                                    handleExtractionUpdate(item.id, {
+                                      dueDate: event.target.value
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label className="field">
+                                <span className="muted">Type</span>
+                                <select
+                                  value={item.taskType || ""}
+                                  onChange={(event) =>
+                                    handleExtractionUpdate(item.id, {
+                                      taskType: event.target.value
+                                    })
+                                  }
+                                >
+                                  <option value="">Choose type</option>
+                                  {TASK_TYPES.map((type) => (
+                                    <option key={type.value} value={type.value}>
+                                      {type.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+                            <div className="extracted-meta">
+                              <span className={`confidence-pill ${confidenceLevel}`}>
+                                {confidencePercent}% confidence
+                              </span>
+                              <span className="pill small">
+                                Detected {formatEventType(item.type)}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="extracted-actions">
+                            <button
+                              className={item.status === "accepted" ? "mini active" : "mini"}
+                              onClick={() =>
+                                handleExtractionUpdate(item.id, { status: "accepted" })
+                              }
+                            >
+                              Accept
+                            </button>
+                            <button
+                              className={item.status === "rejected" ? "mini active" : "mini"}
+                              onClick={() =>
+                                handleExtractionUpdate(item.id, { status: "rejected" })
+                              }
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="card-footer">
                   <button
                     className="btn btn-secondary"
@@ -895,6 +1421,136 @@ function App() {
           </section>
         )}
       </main>
+      {activeTask && taskEdit && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="task-editor-title"
+          onClick={closeTaskEditor}
+        >
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <p className="eyebrow">Task details</p>
+                <h2 id="task-editor-title">{taskEdit.title || "Untitled task"}</h2>
+              </div>
+              <button className="modal-close" type="button" onClick={closeTaskEditor}>
+                Close
+              </button>
+            </div>
+            <form className="modal-form" onSubmit={handleTaskEditSubmit}>
+              <div className="modal-body">
+                <label className="field">
+                  <span className="muted">Title</span>
+                  <input
+                    type="text"
+                    value={taskEdit.title}
+                    onChange={(event) => handleTaskEditChange("title", event.target.value)}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span className="muted">Course</span>
+                  <input
+                    type="text"
+                    value={taskEdit.course}
+                    onChange={(event) => handleTaskEditChange("course", event.target.value)}
+                  />
+                </label>
+                <label className="field field-span">
+                  <span className="muted">Description</span>
+                  <textarea
+                    rows="3"
+                    value={taskEdit.description}
+                    onChange={(event) => handleTaskEditChange("description", event.target.value)}
+                    placeholder="Add details to keep the plan accurate."
+                  />
+                </label>
+                <div className="field field-span">
+                  <span className="muted">Type</span>
+                  <TaskTypePicker
+                    value={taskEdit.taskType}
+                    onChange={(value) => handleTaskEditChange("taskType", value)}
+                  />
+                </div>
+                <label className="field">
+                  <span className="muted">Due date</span>
+                  <input
+                    type="date"
+                    value={taskEdit.dueDate}
+                    onChange={(event) => handleTaskEditChange("dueDate", event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span className="muted">Estimated minutes</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={taskEdit.estimatedMinutes}
+                    onChange={(event) =>
+                      handleTaskEditChange("estimatedMinutes", event.target.value)
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span className="muted">Importance (1-5)</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="5"
+                    value={taskEdit.importance}
+                    onChange={(event) => handleTaskEditChange("importance", event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span className="muted">Status</span>
+                  <select
+                    value={taskEdit.status}
+                    onChange={(event) => handleTaskEditChange("status", event.target.value)}
+                  >
+                    <option value="pending">Pending</option>
+                    <option value="in_progress">In progress</option>
+                    <option value="done">Completed</option>
+                  </select>
+                </label>
+              </div>
+              {taskEditError && <p className="error">{taskEditError}</p>}
+              <div className="modal-footer">
+                <div className="modal-actions">
+                  <button
+                    className="btn btn-danger"
+                    type="button"
+                    onClick={deleteTask}
+                    disabled={taskSaving}
+                  >
+                    Delete
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={closeTaskEditor}
+                    disabled={taskSaving}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={markTaskComplete}
+                    disabled={taskSaving || taskEdit.status === "done"}
+                  >
+                    {taskEdit.status === "done" ? "Completed" : "Mark complete"}
+                  </button>
+                </div>
+                <button className="btn" type="submit" disabled={taskSaving}>
+                  {taskSaving ? "Saving..." : "Save changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -912,6 +1568,37 @@ function StatCard({ title, value, note }) {
 function RiskBadge({ level }) {
   const label = level === "high" ? "High" : level === "medium" ? "Medium" : "Low";
   return <span className={`badge ${level}`}>{label}</span>;
+}
+
+function TaskTypeBadge({ value }) {
+  if (!value) return null;
+  const label = getTaskTypeLabel(value);
+  const isKnown = TASK_TYPES.some((type) => type.value === value);
+  return (
+    <span className={`type-pill small ${isKnown ? value : "neutral"}`}>
+      {label}
+    </span>
+  );
+}
+
+function TaskTypePicker({ value, onChange }) {
+  return (
+    <div className="type-picker">
+      {TASK_TYPES.map((type) => {
+        const selected = value === type.value;
+        return (
+          <button
+            key={type.value}
+            type="button"
+            className={`type-pill ${type.value} ${selected ? "active" : ""}`}
+            onClick={() => onChange(selected ? "" : type.value)}
+          >
+            {type.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function Step({ label, active, done }) {
@@ -999,20 +1686,105 @@ function addMonths(date, amount) {
   return copy;
 }
 
+function parseISODate(dateString) {
+  if (!dateString) return null;
+  const parsed = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function daysUntilDate(targetDate, referenceDate = new Date()) {
+  const target = new Date(targetDate);
+  const reference = new Date(referenceDate);
+  target.setHours(0, 0, 0, 0);
+  reference.setHours(0, 0, 0, 0);
+  const diffMs = target.getTime() - reference.getTime();
+  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+}
+
+function formatShortDate(date) {
+  const label = DAY_LABELS[date.getDay()];
+  return `${label} ${formatMonthDay(date)}`;
+}
+
+function getTopCourses(tasks, limit) {
+  const counts = new Map();
+  tasks.forEach((task) => {
+    const course = task.course?.trim() || "General";
+    counts.set(course, (counts.get(course) || 0) + 1);
+  });
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([course]) => course);
+}
+
+function getTaskTypeLabel(value) {
+  return TASK_TYPES.find((type) => type.value === value)?.label || "Unspecified";
+}
+
+function getTaskTypeWeight(value) {
+  return TASK_TYPE_WEIGHTS[value] ?? 1;
+}
+
+function extractCourseFromFilename(filename) {
+  if (!filename) return null;
+  const cleaned = filename.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ");
+  const match = cleaned.match(/([A-Za-z]{2,})\s*(\d{2,4})/);
+  if (!match) return null;
+  const [, prefix, number] = match;
+  return `${prefix.toUpperCase()} ${number}`;
+}
+
+function mapEventTypeToTaskType(eventType) {
+  if (!eventType) return null;
+  const normalized = eventType.toLowerCase();
+  if (normalized === "exam" || normalized === "quiz") return "exam";
+  if (normalized === "project") return "project";
+  if (normalized === "assignment" || normalized === "lab") return "assignment";
+  if (normalized === "reading") return "discussion";
+  if (normalized === "lecture") return "lecture";
+  if (normalized === "essay") return "essay";
+  return null;
+}
+
+function formatEventType(eventType) {
+  if (!eventType) return "Unspecified";
+  return eventType
+    .split(/[\s_-]+/)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(" ");
+}
+
+function getConfidenceLevel(value) {
+  if (value >= 0.75) return "high";
+  if (value >= 0.5) return "medium";
+  return "low";
+}
+
 function deriveRisk(task) {
   const importance = Number(task.importance || 0);
+  const typeWeight = getTaskTypeWeight(task.task_type);
   let daysToDeadline = null;
   if (task.due_date) {
-    const target = new Date(`${task.due_date}T00:00:00`);
-    const today = new Date();
-    const diffMs = target.setHours(0, 0, 0, 0) - today.setHours(0, 0, 0, 0);
-    daysToDeadline = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    const target = parseISODate(task.due_date);
+    if (target) {
+      daysToDeadline = daysUntilDate(target);
+    }
   }
 
-  if (daysToDeadline !== null && daysToDeadline <= 2) return "high";
-  if (importance >= 4) return "high";
-  if (daysToDeadline !== null && daysToDeadline <= 5) return "medium";
-  if (importance >= 3) return "medium";
+  let score = typeWeight;
+  if (importance >= 4) score += 2;
+  else if (importance >= 3) score += 1;
+
+  if (daysToDeadline !== null) {
+    if (daysToDeadline <= 2) score += 3;
+    else if (daysToDeadline <= 5) score += 2;
+    else if (daysToDeadline <= 10) score += 1;
+  }
+
+  if (score >= 6) return "high";
+  if (score >= 3) return "medium";
   return "low";
 }
 
