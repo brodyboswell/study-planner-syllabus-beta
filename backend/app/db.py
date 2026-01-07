@@ -25,6 +25,8 @@ def init_db() -> None:
                 user_id TEXT,
                 title TEXT NOT NULL,
                 course TEXT,
+                description TEXT,
+                task_type TEXT,
                 due_date TEXT,
                 estimated_minutes INTEGER,
                 importance INTEGER,
@@ -59,6 +61,8 @@ def init_db() -> None:
         )
 
         _ensure_column(connection, "tasks", "user_id", "TEXT")
+        _ensure_column(connection, "tasks", "description", "TEXT")
+        _ensure_column(connection, "tasks", "task_type", "TEXT")
         _ensure_column(connection, "syllabi", "user_id", "TEXT")
 
         connection.execute("UPDATE tasks SET user_id = 'local' WHERE user_id IS NULL")

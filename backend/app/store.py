@@ -137,13 +137,26 @@ def create_task(data: dict, user_id: Optional[str] = None) -> dict:
     with get_connection() as connection:
         cursor = connection.execute(
             """
-            INSERT INTO tasks (user_id, title, course, due_date, estimated_minutes, importance, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (
+                user_id,
+                title,
+                course,
+                description,
+                task_type,
+                due_date,
+                estimated_minutes,
+                importance,
+                status,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 owner_id,
                 data.get("title"),
                 data.get("course"),
+                data.get("description"),
+                data.get("task_type"),
                 data.get("due_date"),
                 data.get("estimated_minutes"),
                 data.get("importance"),
@@ -159,6 +172,8 @@ def create_task(data: dict, user_id: Optional[str] = None) -> dict:
         "user_id": owner_id,
         "title": data.get("title"),
         "course": data.get("course"),
+        "description": data.get("description"),
+        "task_type": data.get("task_type"),
         "due_date": data.get("due_date"),
         "estimated_minutes": data.get("estimated_minutes"),
         "importance": data.get("importance"),
@@ -173,6 +188,8 @@ def update_task(task_id: int, updates: dict, user_id: Optional[str] = None) -> O
     allowed_fields = {
         "title",
         "course",
+        "description",
+        "task_type",
         "due_date",
         "estimated_minutes",
         "importance",

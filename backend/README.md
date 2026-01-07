@@ -31,7 +31,7 @@ If you run the frontend on a different port, set:
 Form-data:
 - `file`: PDF file
 
-Headers (optional):
+Headers (required):
 - `X-User-Id`: user identifier (e.g., Supabase user id)
 
 Response:
@@ -53,7 +53,7 @@ For calendar output:
 - `PATCH /api/tasks/{task_id}`
 - `DELETE /api/tasks/{task_id}`
 
-Tasks are scoped by `X-User-Id` when provided. If missing, they are stored under a local default user.
+Tasks and syllabi are scoped by `X-User-Id` and require a signed-in user.
 
 ## Notes
 - Extraction is text-based; scanned PDFs use free OCR.Space as a fallback.
